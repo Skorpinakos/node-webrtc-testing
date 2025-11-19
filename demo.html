@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WebRTC L4S Demo</title>
+  <style>
+    body { font-family: sans-serif; padding: 1rem; }
+    #log { white-space: pre-wrap; background: #111; color: #0f0; padding: 0.5rem; height: 300px; overflow-y: auto; }
+    button { margin-right: 0.5rem; }
+  </style>
+</head>
+<body>
+  <h1>WebRTC DataChannel Demo (Node answerer)</h1>
+  <p>
+    <button id="connectBtn">Connect</button>
+    <button id="sendBtn" disabled>Send Message</button>
+  </p>
+  <p>
+    <label>
+      Message:
+      <input id="msgInput" type="text" value="ping from browser" size="40">
+    </label>
+  </p>
+  <div id="log"></div>
+
+  <script>
+    const logEl = document.getElementById('log');
+    function log(...args) {
+      const line = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+      console.log(line);
+      logEl.textContent += line + '\n';
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    const connectBtn = document.getElementById('connectBtn');
+    const sendBtn = document.getElementById('sendBtn');
+    const msgInput = document.getElementById('msgInput');
+
+    let pc;
+    let dc;
+
+    async function start() {
+      // 1. Create RTCPeerConnection in the browser
+        const iceServers = [
+        // { urls: 'stun:stun.l.google.com:19302' },  // optional
+        {
+            urls: 'turn:150.140.195.216:3478?transport=udp',
+            username: 'webrtcuser',
+            credential: 'webrtcpass',
+        },
+        ];
+
+        pc = new RTCPeerConnection({
+        iceServers,
+        iceTransportPolicy: 'relay',   // TURN-only for now
+        });
+
+
+
+
+        pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            log('Browser ICE candidate:', event.candidate.candidate);
+        } else {
+            log('Browser ICE candidate gathering complete');
+        }
+        };
+
+        pc.oniceconnectionstatechange = () => {
+        log('Browser: ICE state = ' + pc.iceConnectionState);
+        };
+
+
+      // 2. Create DataChannel from browser side
+      dc = pc.createDataChannel('test');
+      dc.onopen = () => {
+        log('Browser: DataChannel open');
+        sendBtn.disabled = false;
+      };
+      dc.onmessage = (ev) => {
+        log('Browser: received from server:', ev.data);
+      };
+      dc.onclose = () => {
+        log('Browser: DataChannel closed');
+        sendBtn.disabled = true;
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        log('Browser: ICE state =', pc.iceConnectionState);
+      };
+
+      // 3. Create offer
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      // Wait for ICE gathering to complete so we send full SDP to server
+      await new Promise((resolve) => {
+        if (pc.iceGatheringState === 'complete') {
+          return resolve();
+        }
+        pc.onicegatheringstatechange = () => {
+          if (pc.iceGatheringState === 'complete') {
+            resolve();
+          }
+        };
+      });
+
+      const fullOffer = pc.localDescription;
+      log('Browser: sending offer to server');
+
+      // 4. Send offer to Node server
+      const resp = await fetch('/offer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fullOffer),
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text();
+        log('Server error:', text);
+        return;
+      }
+
+      const answer = await resp.json();
+      log('Browser: got answer from server');
+      await pc.setRemoteDescription(answer);
+    }
+
+    connectBtn.onclick = () => {
+      connectBtn.disabled = true;
+      start().catch(e => {
+        log('Error in start():', e);
+        connectBtn.disabled = false;
+      });
+    };
+
+    sendBtn.onclick = () => {
+      if (!dc || dc.readyState !== 'open') {
+        log('DataChannel not open');
+        return;
+      }
+      const msg = msgInput.value || 'ping';
+      log('Browser: sending:', msg);
+      dc.send(msg);
+    };
+  </script>
+</body>
+</html>

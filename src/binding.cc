@@ -28,12 +28,49 @@
 #include "src/methods/get_user_media.hh"
 #include "src/methods/i420_helpers.hh"
 #include "src/node/error_factory.hh"
+#include "system_wrappers/include/field_trial.h"
+
 
 #ifdef DEBUG
 #include "src/test.hh"
 #endif
 
 static void dispose(void *) { node_webrtc::PeerConnectionFactory::Dispose(); }
+
+namespace {
+
+// only  once.
+bool g_field_trials_initialized = false;
+
+Napi::Value SetFieldTrials(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+
+  if (info.Length() < 1 || !info[0].IsString()) {
+    Napi::TypeError::New(env, "setFieldTrials(trials: string) expected")
+        .ThrowAsJavaScriptException();
+    return env.Null();
+  }
+
+  if (g_field_trials_initialized) {
+    Napi::Error::New(env, "Field trials already initialized")
+        .ThrowAsJavaScriptException();
+    return env.Null();
+  }
+
+  std::string trials = info[0].As<Napi::String>().Utf8Value();
+
+  // persist along process.
+  static std::string trials_storage;
+  trials_storage = trials;
+
+  webrtc::field_trial::InitFieldTrialsFromString(trials_storage.c_str());
+  g_field_trials_initialized = true;
+
+  return env.Undefined();
+}
+
+}  
+
 
 static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   node_webrtc::ErrorFactory::Init(env, exports);
@@ -63,7 +100,13 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   assert(status == napi_ok);
   (void)status; // Ignore unused variable warning in release builds
 
+  exports.Set(
+    "setFieldTrials",
+    Napi::Function::New(env, SetFieldTrials)
+  );
+
   return exports;
 }
+
 
 NODE_API_MODULE(wrtc_napi, Init)
